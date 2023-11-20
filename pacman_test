@@ -1,4 +1,4 @@
-from pacman7 import *
+from pacman import *
 
 print("-------------------------------test board---------------------------")
 for row in board:
