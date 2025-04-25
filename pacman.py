@@ -1,397 +1,501 @@
+import heapq
+import os
+import random
+import time
+from typing import Any, TypeAlias
 
 import numpy as np
-import random 
-import copy
+
+Position: TypeAlias = tuple[int, int]
+GameState: TypeAlias = dict[str, Any]
+Path: TypeAlias = list[Position]
+
+WALL = "o"
+DOT = "."
+EMPTY = " "
+PACMAN = "P"
+GHOST = "G"
+POWER_PELLET = "*"
+
+SCORE_DOT = 10
+SCORE_MOVE = -1
+SCORE_WIN = 1000.0
+SCORE_LOSE = -1000.0
+GHOST_DISTANCE_PENALTY = -2.0
+GHOST_PROXIMITY_THRESHOLD = 1
+GHOST_SEVERE_PENALTY = -200.0
+DOT_PROXIMITY_BONUS_FACTOR = 5.0
+DOT_REMAINING_PENALTY_FACTOR = 0.5
 
 
-g1_score=0
-g2_score=0
-score=0
+class Board:
+    def __init__(self, layout: list[str]):
+        if not layout:
+            raise ValueError("Layout cannot be empty")
 
-board = np.full((11, 20), ".")
+        first_row_len = len(layout[0])
+        print(first_row_len)
+        print([len(row) == first_row_len for row in layout])
+        if not all(len(row) == first_row_len for row in layout):
+            raise ValueError("All rows in the layout must have the same length.")
 
-for i in range (11):
-    board[i,0]="o"
-    board[i,19]="o"
-for i in range(20):
-    board[0,i]="o"
-    board[10,i]="o"
-# add walls
-board[2,2]=board[3,2]=board[4,2]=board[6,2]=board[7,2]=board[8,2]="o"
-board[2,17]=board[3,17]=board[4,17]=board[6,17]=board[7,17]=board[8,17]="o"
-board[2,3]=board[8,3]= "o"
-board[2,16]=board[8,16]= "o"
-board[4,4]=board[4,5]="o"
-board[6,4]=board[6,5]="o"
-board[4,14]=board[4,15]="o"
-board[6,14]=board[6,15]="o"
-board[1,5]=board[2,5]=board[8,5]=board[9,5]="o"
-board[1,14]=board[2,14]=board[8,14]=board[9,14]="o"
-board[8,7]=board[8,8]=board[8,9]=board[8,10]=board[8,11]=board[8,12]="o"
-board[6,7]=board[6,8]=board[6,9]=board[6,10]=board[6,11]=board[6,12]="o"
-board[2,7]=board[2,8]=board[2,9]=board[2,10]=board[2,11]=board[2,12]="o"
-board[5,7]=board[4,7]=board[5,12]=board[4,12]=board[4,8]=board[4,11]="o"
+
+        self.layout = np.array([list(row) for row in layout], dtype=str)
+
+        self.rows: int
+        self.cols: int
+        self.rows, self.cols = self.layout.shape
+        self.dots_remaining: int = int(np.sum(self.layout == DOT))
+
+    def __getitem__(self, pos: Position) -> str:
+        r, c = pos
+        if 0 <= r < self.rows and 0 <= c < self.cols:
+            return str(self.layout[r, c])
+        return WALL
+
+    def __setitem__(self, pos: Position, value: str) -> None:
+        r, c = pos
+        if 0 <= r < self.rows and 0 <= c < self.cols:
+            current_val = str(self.layout[r, c])
+            if current_val == DOT and value != DOT:
+                self.dots_remaining = max(0, self.dots_remaining - 1)
+            self.layout[r, c] = value
+
+    def is_wall(self, pos: Position) -> bool:
+        return self[pos] == WALL
+
+    def get_valid_moves(self, pos: Position) -> list[Position]:
+        r, c = pos
+        moves: list[Position] = []
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            new_pos: Position = (r + dr, c + dc)
+            if not self.is_wall(new_pos):
+                moves.append(new_pos)
+        if not moves:
+            if not self.is_wall(pos):
+                moves.append(pos)
+
+        return moves
+
+    def draw(self, score: float = 0.0, message: str = "") -> None:
+        _ = os.system("cls" if os.name == "nt" else "clear")
+        for row in self.layout:
+            print(" ".join(row))
+        print(f"\nScore: {score:.0f}")
+        if message:
+            print(message)
+
+
+class Pacman:
+    def __init__(self, pos: Position):
+        self.pos: Position = pos
+        self.score: float = 0.0
+
+    def move(self, new_pos: Position, board: Board) -> None:
+        current_char: str = board[new_pos]
+        if current_char == DOT:
+            self.score += SCORE_DOT
+
+        else:
+            self.score += SCORE_MOVE
+
+        board[self.pos] = EMPTY
+        self.pos = new_pos
+        board[self.pos] = PACMAN
+
 
 class Ghost:
-    def __init__(self,ghost_row,ghost_col) -> None:
-        self.ghost_row=ghost_row
-        self.ghost_col=ghost_col
-        board[ghost_row][ghost_col]='G'
-        self.last_pos="."
-    
-    def move(self):
+    def __init__(self, pos: Position, id_num: int):
+        self.id: int = id_num
+        self.start_pos: Position = pos
+        self.pos: Position = pos
+        self.previous_char: str = EMPTY
 
-        rand=random.randint(1,4)
-        changed=0
-        if rand == 1:
-            if board[self.ghost_row - 1][self.ghost_col] != 'o' and board[self.ghost_row - 1][self.ghost_col] != 'G':
-                if board[self.ghost_row - 1][self.ghost_col] == 'o':
-                    changed=1
-                board[self.ghost_row][self.ghost_col] = self.last_pos  # Clear the current position
-                self.ghost_row -= 1  # Move up
-                self.last_pos=board[self.ghost_row][self.ghost_col] 
-                board[self.ghost_row][self.ghost_col] = 'G'  # Update the new position
-                changed=1
-        if rand == 2:
-            if board[self.ghost_row ][self.ghost_col + 1] != 'o' and board[self.ghost_row ][self.ghost_col + 1] != 'G':
-                if board[self.ghost_row ][self.ghost_col +1] == 'o':
-                    changed=1
-                board[self.ghost_row][self.ghost_col] = self.last_pos   # Clear the current position
-                self.ghost_col += 1  # Move right
-                self.last_pos=board[self.ghost_row][self.ghost_col]
-                board[self.ghost_row][self.ghost_col] = 'G'  # Update the new position
-                changed=1
-        if rand == 3:
-            if board[self.ghost_row + 1][self.ghost_col] != 'o' and board[self.ghost_row + 1][self.ghost_col] != 'G':
-                if board[self.ghost_row + 1][self.ghost_col] == 'o':
-                    changed=1
-                board[self.ghost_row][self.ghost_col] = self.last_pos   # Clear the current position
-                self.ghost_row += 1  # Move up
-                self.last_pos=board[self.ghost_row][self.ghost_col]
-                board[self.ghost_row][self.ghost_col] = 'G'  # Update the new position
-                changed=1
-        if rand == 4:
-            if board[self.ghost_row ][self.ghost_col - 1] != 'o' and board[self.ghost_row ][self.ghost_col - 1] != 'G':
-                if board[self.ghost_row][self.ghost_col -1] == 'o':
-                    changed=1
-                board[self.ghost_row][self.ghost_col] = self.last_pos   # Clear the current position
-                self.ghost_col -= 1  # Move up
-                self.last_pos=board[self.ghost_row][self.ghost_col]
-                board[self.ghost_row][self.ghost_col] = 'G'  # Update the new position
-                changed=1
+    def move(self, new_pos: Position, board: Board) -> None:
+        board[self.pos] = self.previous_char
+        self.previous_char = board[new_pos]
+        if self.previous_char == PACMAN:
+            self.previous_char = EMPTY
+        self.pos = new_pos
+        board[self.pos] = GHOST
 
-def find_ghost(board):
-    position=[]
-    for i in range(11):
-        for j in range(20):
-            if board[i][j]=="G":
-                position.append([i, j])
-    return position
 
-def find_pacman(board):
-    position=0
-    for i in range(11):
-        for j in range(20):
-            if board[i][j]=='P':
-                position=[i, j]
-                return position
+def heuristic(a: Position, b: Position) -> float:
+    (r1, c1) = a
+    (r2, c2) = b
+    return float(abs(r1 - r2) + abs(c1 - c2))
 
-def distance(board,ghost_loc):
-    p=find_pacman(board)
-    dist1=abs(ghost_loc[0]-p[0])+abs(ghost_loc[1]-p[1])-1
-    
-    return dist1
-         
-def ghost_possible_move(board,id):
-    possible_moves = []
-    current_row,current_col=find_ghost(board)[0]
-    if current_row - 1 >=0:
-        if (board[current_row - 1 ][current_col] != 'o' and board[current_row - 1][current_col] != 'G') or board[current_row -1][current_col ]=='P':
-            possible_moves.append([current_row -1, current_col])
 
-    if current_row + 1 <11:
-        if (board[current_row +1 ][current_col] != 'o' and board[current_row +1][current_col] != 'G') or board[current_row +1][current_col ]=='P':
-            possible_moves.append([current_row +1, current_col])
+def a_star_search(board: Board, start: Position, goal: Position) -> Path | None:
+    frontier: list[tuple[float, float, Position]] = [
+        (0 + heuristic(start, goal), 0, start)
+    ]
+    came_from: dict[Position, Position | None] = {start: None}
+    cost_so_far: dict[Position, float] = {start: 0}
 
-    if current_col - 1 >=0:
-        if (board[current_row][current_col - 1] != 'o' and board[current_row ][current_col-1] != 'G') or board[current_row ][current_col -1]=='P':
-            possible_moves.append([current_row , current_col -1])
+    while frontier:
+        _, current_g_score, current_pos = heapq.heappop(frontier)
 
-    if current_col + 1 <20:
-        if (board[current_row ][current_col +1] != 'o' and board[current_row ][current_col+1] != 'G') or board[current_row ][current_col +1]=='P':
-            possible_moves.append([current_row, current_col +1])
+        if current_pos == goal:
+            path: Path = []
+            temp: Position | None = current_pos
+            while temp is not None:
+                path.append(temp)
+                temp = came_from[temp]
+            return path[::-1]
 
-    if  board[current_row +1  ][current_col] == 'o' or board[current_row -1  ][current_col]=="o" or board[current_row  ][current_col+1]=="o" or board[current_row   ][current_col -1]=="o":
-        possible_moves.append([current_row, current_col])
-        
-    if  board[current_row +1 ][current_col] == 'G' or board[current_row -1 ][current_col]=="G" or board[current_row ][current_col+1]=="G" or board[current_row ][current_col -1]=="G":
-        possible_moves.append([current_row, current_col])
-        
-    return possible_moves
+        valid_moves = board.get_valid_moves(current_pos)
+        valid_moves.sort(key=lambda p: heuristic(p, goal))
 
-def pacman_possible_moves(board, current_row,current_col):
-    
-    possible_moves = []
-    if current_row - 1 >=0:
-        if board[current_row - 1 ,current_col] != 'o' and board[current_row - 1,current_col] != 'G':
-            possible_moves.append([current_row -1, current_col])
+        for next_pos in valid_moves:
+            new_cost: float = current_g_score + 1.0
 
-    if current_row + 1 <11:
-        if board[current_row +1 ,current_col] != 'o' and board[current_row +1,current_col] != 'G':
-            possible_moves.append([current_row +1, current_col])
+            if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
+                cost_so_far[next_pos] = new_cost
+                priority: float = new_cost + heuristic(next_pos, goal)
+                heapq.heappush(frontier, (priority, new_cost, next_pos))
+                came_from[next_pos] = current_pos
 
-    if current_col - 1 >=0:
-        if board[current_row][current_col - 1] != 'o' and board[current_row ][current_col-1] != 'G':
-            possible_moves.append([current_row , current_col -1])
-    if current_col + 1 <20:
-        if board[current_row ][current_col +1] != 'o' and board[current_row ][current_col+1] != 'G':
-            possible_moves.append([current_row, current_col +1])
+    return None
 
-    if  board[current_row +1  ,current_col] == 'o' or board[current_row -1  ,current_col]=="o" or board[current_row  ,current_col+1]=="o" or board[current_row   ,current_col -1]=="o":
-        possible_moves.append([current_row, current_col])
 
-    return possible_moves
+def evaluate_state(
+    board: Board,
+    pacman_pos: Position,
+    pacman_score: float,
+    ghost_data: list[dict[str, Any]],
+) -> float:
+    ghost_positions = [g["pos"] for g in ghost_data]
+    if pacman_pos in ghost_positions:
+        return SCORE_LOSE
 
-def ghost1_fake_move(board, move, current_row,current_col):
-    global g1_score
-    board_copy=copy.deepcopy(board)
-    [row, col] = move
-    print(type(board_copy))
+    if board.dots_remaining == 0:
+        return SCORE_WIN
 
-    if board_copy[row][col]=="P":
-        board_copy[current_row][current_col] = " "
-        board_copy[row][col] = 'G'
-        g1_score+=1000
-        evaluate_g1()
-        g1_score-=1000
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy
+    score = pacman_score
 
-    elif distance(board_copy, move)<distance(board_copy, (current_row,current_col)):
-        board_copy[current_row][current_col] = " "
-        board_copy[row][col] = 'G'
-        g1_score+=1
-        evaluate_g1()
-        g1_score-=1
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy 
-    
-    elif distance(board_copy, [current_row,current_col])==distance(board_copy, move):
-        evaluate_g1()
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy 
-    elif distance(board_copy, [current_row,current_col])<distance(board_copy, move):
-        board_copy[current_row][current_col]=" "
-        board_copy[row][col] = 'G'
-        g1_score-=1
-        evaluate_g1()
-        g1_score+=1
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy 
-    elif (row==current_row) and (col==current_col):
-        evaluate_g1()
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy
+    min_dist_to_ghost: float = float("inf")
+    for ghost_pos in ghost_positions:
+        dist = heuristic(pacman_pos, ghost_pos)
+        min_dist_to_ghost = min(min_dist_to_ghost, dist)
+        if dist <= GHOST_PROXIMITY_THRESHOLD:
+            score += GHOST_SEVERE_PENALTY
+        elif dist <= 3:
+            score += GHOST_DISTANCE_PENALTY * (4.0 - dist)
 
-def ghost2_fake_move(board, move, current_row,current_col):
-    global g2_score
-    board_copy=copy.deepcopy(board)
-    row, col = move
+    score -= board.dots_remaining * SCORE_DOT * DOT_REMAINING_PENALTY_FACTOR
 
-    if board_copy[row][col]=="P":
-        board_copy[current_row][current_col] = " "
-        board_copy[row][col] = 'G'
-        g2_score+=1000
-        evaluate_g1()
-        g2_score-=1000
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy
-
-    elif distance(board, (current_row,current_col))>distance(board, move):
-        board_copy[row][col] = 'G'
-        g2_score+=1
-        evaluate_g2()
-        g2_score-=1
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy 
-    
-    elif distance(board, (current_row,current_col))==distance(board, move):
-        evaluate_g2()
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy 
-    elif distance(board, (current_row,current_col))<distance(board, move):
-        board_copy[row][col] = 'G'
-        g2_score-=1
-        evaluate_g2()
-        g2_score+=1
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy 
-    elif (row==current_row) and (col==current_col):
-        evaluate_g2()
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy
-
-def evaluate_g1():
-    print(g1_score)
-    return g1_score
-
-def evaluate_g2():
-    print(g2_score)
-    return g2_score
-
-def fake_move(board, move, current_row,current_col):
-    global score
-    board_copy=copy.deepcopy(board)
-    i=0
-    for row in board_copy:
-        i+=1
-    print(i)
-    row, col = move
-    if board_copy[row][col] == '.':  # Check if the move is valid
-        print(type(current_col), type(current_row))
-        #print((board_copy[current_row]))
-        board_copy[current_row]=' '
-        print()
-        board_copy[row][col] = 'P'
-        score+=9
-        evaluate()
-        score-=9
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy 
-    
-    if board_copy[row][col] == ' ':
-        board_copy[current_row][current_col]=' '
-        board_copy[row][col] = 'P'  # Assuming 'X' represents the player's move
-        score-=1
-        evaluate()
-        score+=1
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy  # Move successfully made
-    
-    if board_copy[row][col] == 'P':
-        evaluate()
-        for row in board_copy:
-            print(' '.join(row))
-        return board_copy
-
-def make_move(board, move, current_row,current_col):
-    global score
-    row, col = move
-    if board[row][col] == '.':  # Check if the move is valid
-        board[current_row][current_col]=" "
-        score+=9
-        board[row][col] = 'P'
-        current_row=row
-        current_col=col
-        evaluate()
-        for row in board:
-            print(' '.join(row))
-        return board
-    
-    if board[row][col] == ' ':
-        board[current_row][current_col]=" "
-        score-=1
-        board[row][col] = 'P'  # Assuming 'X' represents the player's move
-        current_row=row
-        current_col=col
-        evaluate()
-        for row in board:
-            print(' '.join(row))
-        return board  # Move successfully made
-    if board[row][col] == 'P':
-        evaluate()
-        for row in board:
-            print(' '.join(row))
-        return board  # Move successfully made
-
-def evaluate():
-    print(score)
     return score
 
-def game_over():
-    if find_pacman(board)==0:
-        print("Game over!")
-        return 1
+
+def simulate_move(game_state: GameState, agent_index: int, move: Position) -> GameState:
+    new_board_layout = np.copy(game_state["board"].layout)
+    new_board = Board([])
+    new_board.layout = new_board_layout
+    new_board.rows, new_board.cols = new_board.layout.shape
+    new_board.dots_remaining = game_state["board"].dots_remaining
+
+    new_pacman_state = game_state["pacman"].copy()
+    new_ghosts_state = [g.copy() for g in game_state["ghosts"]]
+    new_score = game_state["score"]
+
+    new_state: GameState = {
+        "board": new_board,
+        "pacman": new_pacman_state,
+        "ghosts": new_ghosts_state,
+        "score": new_score,
+    }
+
+    if agent_index == 0:
+        pacman_info = new_state["pacman"]
+        old_pos = pacman_info["pos"]
+        new_pos = move
+
+        char_at_new_pos = new_state["board"][new_pos]
+
+        if char_at_new_pos == DOT:
+            pacman_info["score"] += SCORE_DOT
+            new_state["score"] += SCORE_DOT
+            new_state["board"].dots_remaining = max(
+                0, new_state["board"].dots_remaining - 1
+            )
+        else:
+            pacman_info["score"] += SCORE_MOVE
+            new_state["score"] += SCORE_MOVE
+
+        new_state["board"][old_pos] = EMPTY
+        new_state["board"][new_pos] = PACMAN
+        pacman_info["pos"] = new_pos
+
     else:
-        return 0
+        ghost_id_index = agent_index - 1
+        ghost_info = new_state["ghosts"][ghost_id_index]
+        old_pos = ghost_info["pos"]
+        new_pos = move
+
+        original_char_at_old_pos = ghost_info["previous_char"]
+        new_state["board"][old_pos] = original_char_at_old_pos
+
+        new_char_at_new_pos = new_state["board"][new_pos]
+        ghost_info["previous_char"] = (
+            EMPTY if new_char_at_new_pos == PACMAN else new_char_at_new_pos
+        )
+
+        new_state["board"][new_pos] = GHOST
+        ghost_info["pos"] = new_pos
+
+    return new_state
 
 
-def get_best_move(board, depth,current_row,current_col):
-    best_eval = -1000
-    best_move = None
-    board_copy=np.full((11,20)," ")
-    #board_copy=copy.deepcopy(board)
-    for i in range(len(board)):
-        for j in range(len(board[0])):
-            board_copy[i][j] = board[i][j]
-    for move in pacman_possible_moves(board_copy, current_row,current_col):
-        new_board = fake_move(board_copy, move, current_row,current_col)
-        print(type(pacman_possible_moves(board_copy, current_row,current_col)),type(move),type(move))
-        eval = minimax(new_board, depth - 1, "min1")
-        #eval = minimax(new_board, depth - 1, "min1")
-        if eval > best_eval:
-            best_eval = eval
+def minimax(
+    game_state: GameState, depth: int, agent_index: int, alpha: float, beta: float
+) -> float:
+    num_agents: int = 1 + len(game_state["ghosts"])
+
+    current_pacman_pos: Position = game_state["pacman"]["pos"]
+    current_ghost_data: list[dict[str, Any]] = game_state["ghosts"]
+    current_ghost_positions: list[Position] = [g["pos"] for g in current_ghost_data]
+
+    if (
+        current_pacman_pos in current_ghost_positions
+        or game_state["board"].dots_remaining == 0
+        or depth == 0
+    ):
+        return evaluate_state(
+            game_state["board"],
+            current_pacman_pos,
+            game_state["pacman"]["score"],
+            current_ghost_data,
+        )
+
+    next_agent_index: int = (agent_index + 1) % num_agents
+    next_depth: int = depth - 1 if next_agent_index == 0 else depth
+
+    possible_moves: list[Position] = []
+    if agent_index == 0:
+        possible_moves = game_state["board"].get_valid_moves(current_pacman_pos)
+        safe_moves = [m for m in possible_moves if m not in current_ghost_positions]
+        if not safe_moves:
+            possible_moves = game_state["board"].get_valid_moves(current_pacman_pos)
+        else:
+            possible_moves = safe_moves
+        if not possible_moves:
+            possible_moves = [current_pacman_pos]
+
+        best_val: float = -float("inf")
+        for move in possible_moves:
+            new_state = simulate_move(game_state, agent_index, move)
+            val: float = minimax(new_state, next_depth, next_agent_index, alpha, beta)
+            best_val = max(best_val, val)
+            alpha = max(alpha, best_val)
+            if beta <= alpha:
+                break
+        return best_val
+
+    else:
+        ghost_id_index: int = agent_index - 1
+        current_ghost_pos: Position = current_ghost_positions[ghost_id_index]
+        possible_moves = game_state["board"].get_valid_moves(current_ghost_pos)
+
+        if not possible_moves:
+            possible_moves = [current_ghost_pos]
+
+        worst_val: float = float("inf")
+        for move in possible_moves:
+            new_state = simulate_move(game_state, agent_index, move)
+            val = minimax(new_state, next_depth, next_agent_index, alpha, beta)
+            worst_val = min(worst_val, val)
+            beta = min(beta, worst_val)
+            if beta <= alpha:
+                break
+        return worst_val
+
+
+def get_best_pacman_action(game_state: GameState, depth: int) -> Position:
+    pacman_pos: Position = game_state["pacman"]["pos"]
+    possible_moves: list[Position] = game_state["board"].get_valid_moves(pacman_pos)
+    ghost_positions: list[Position] = [g["pos"] for g in game_state["ghosts"]]
+    safe_moves = [m for m in possible_moves if m not in ghost_positions]
+
+    if not safe_moves:
+        possible_moves = game_state["board"].get_valid_moves(pacman_pos)
+        if not possible_moves:
+            return pacman_pos
+    else:
+        possible_moves = safe_moves
+
+    best_score: float = -float("inf")
+
+    best_move: Position = possible_moves[0] if possible_moves else pacman_pos
+    alpha: float = -float("inf")
+    beta: float = float("inf")
+
+    num_agents: int = 1 + len(game_state["ghosts"])
+    next_agent_index: int = 1 % num_agents if num_agents > 1 else 0
+    next_depth: int = depth
+
+    for move in possible_moves:
+        new_state = simulate_move(game_state, 0, move)
+        score: float = minimax(new_state, next_depth, next_agent_index, alpha, beta)
+
+        if score > best_score:
+            best_score = score
             best_move = move
-    make_move(board, best_move, current_row,current_col)
-    print(evaluate())
+        alpha = max(alpha, best_score)
+
     return best_move
 
 
-def minimax(board, depth, maximizing_player):
+class PacmanGame:
+    def __init__(
+        self, layout_filename: str, num_ghosts: int = 2, pacman_ai_depth: int = 3
+    ):
+        self.layout_str: list[str] = self._load_layout(layout_filename)
+        self.board: Board = Board(self.layout_str)
 
-    for row in board:
-            print(' '.join(row))
+        pacman_starts: list[Position] = self._find_char(PACMAN)
+        if not pacman_starts:
+            raise ValueError("Layout must contain Pacman 'P'")
+        self.pacman_start_pos: Position = pacman_starts[0]
 
-    if (depth == 0 or game_over()==1)and maximizing_player=="max":
-        return evaluate()
-    if (depth == 0 or game_over()==1)and maximizing_player=="min1":
-        return evaluate_g1()
-    if (depth == 0 or game_over()==1)and maximizing_player=="min2":
-        return evaluate_g2()
-    board_copy=copy.deepcopy(board)
-    max_eval = -1000
-    min_eval = 1000
-    if maximizing_player=="max":
-        loc=find_pacman(board)
-        for move in pacman_possible_moves(board_copy, loc[0],loc[1]):
-            new_board = fake_move(board_copy, move,  loc[0],loc[1])
-            eval = minimax(new_board, depth - 1, "min1")
-            max_eval = max(max_eval, eval)
-        for row in board:
-            print(' '.join(row))
-        return max_eval
-    if maximizing_player=="min1":
-        loc=find_ghost(board)
-        for move in ghost_possible_move(board_copy,0):
-            new_board = fake_move(board_copy, move,  loc[0],loc[1])
-            #print(type(),type())
-            eval = minimax(new_board, depth - 1, "min2")
-            min_eval = min(min_eval, eval)
-        for row in board:
-            print(' '.join(row))
-        return min_eval
-    if maximizing_player=="min2":
-        loc=find_ghost(board)
-        for move in ghost_possible_move(board_copy,1):
-            new_board = fake_move(board_copy, move,  loc[0],loc[1])
-            eval = minimax(new_board, depth - 1, "max")
-            min_eval = min(min_eval, eval)
-        for row in board:
-            print(' '.join(row))
-        return min_eval
+        ghost_starts: list[Position] = self._find_char(GHOST)
+        if not ghost_starts:
+            empty_starts = self._find_char(EMPTY)
+            if len(empty_starts) < num_ghosts:
+                raise ValueError("Not enough empty spaces ' ' or 'G' for ghosts")
 
+            indices = np.linspace(0, len(empty_starts) - 1, num_ghosts, dtype=int)
+            ghost_starts = [empty_starts[i] for i in indices]
+
+        self.pacman: Pacman = Pacman(self.pacman_start_pos)
+        self.ghosts: list[Ghost] = []
+        for i in range(num_ghosts):
+            start_pos = ghost_starts[i % len(ghost_starts)]
+            ghost = Ghost(start_pos, i)
+            ghost.previous_char = self.board[start_pos]
+            self.ghosts.append(ghost)
+
+        self.board[self.pacman.pos] = PACMAN
+        for ghost in self.ghosts:
+            self.board[ghost.pos] = GHOST
+
+        self.game_over: bool = False
+        self.message: str = ""
+        self.pacman_ai_depth: int = pacman_ai_depth
+
+    def _load_layout(self, filename: str) -> list[str]:
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"Layout file not found: {filename}")
+        with open(filename, "r") as f:
+            return [line.strip() for line in f if line.strip()]
+
+    def _find_char(self, char_to_find: str) -> list[Position]:
+        positions: list[Position] = []
+        for r, row in enumerate(self.layout_str):
+            for c, cell in enumerate(row):
+                if cell == char_to_find:
+                    positions.append((r, c))
+        return positions
+
+    def _get_game_state(self) -> GameState:
+        state: GameState = {
+            "board": self.board,
+            "pacman": {"pos": self.pacman.pos, "score": self.pacman.score},
+            "ghosts": [
+                {"pos": g.pos, "id": g.id, "previous_char": g.previous_char}
+                for g in self.ghosts
+            ],
+            "score": self.pacman.score,
+        }
+        return state
+
+    def run(self) -> None:
+        turn: int = 0
+        while not self.game_over:
+            self.board.draw(self.pacman.score, self.message)
+            self.message = ""
+            turn += 1
+
+            game_state = self._get_game_state()
+            pacman_action = get_best_pacman_action(game_state, self.pacman_ai_depth)
+
+            if pacman_action != self.pacman.pos:
+                self.pacman.move(pacman_action, self.board)
+
+            if self.pacman.pos in [g.pos for g in self.ghosts]:
+                self.message = "Game Over! Pacman caught!"
+                self.game_over = True
+                self.board[self.pacman.pos] = "X"
+                self.board.draw(self.pacman.score, self.message)
+                break
+
+            for ghost in self.ghosts:
+                goal: Position = self.pacman.pos
+                path: Path | None = a_star_search(self.board, ghost.pos, goal)
+
+                ghost_action: Position = ghost.pos
+                if path and len(path) > 1:
+                    ghost_action = path[1]
+                elif path and len(path) == 1:
+                    ghost_action = path[0]
+                else:
+                    valid_moves = self.board.get_valid_moves(ghost.pos)
+                    if valid_moves:
+                        ghost_action = random.choice(
+                            [m for m in valid_moves if m != ghost.pos] + [ghost.pos]
+                        )
+
+                if ghost_action != ghost.pos:
+                    ghost.move(ghost_action, self.board)
+
+                if ghost.pos == self.pacman.pos:
+                    self.message = f"Game Over! Ghost {ghost.id} caught Pacman!"
+                    self.game_over = True
+                    self.board[ghost.pos] = "X"
+                    break
+
+            if self.game_over:
+                self.board.draw(self.pacman.score, self.message)
+                break
+
+            if self.board.dots_remaining == 0:
+                self.message = "You Win! All dots eaten!"
+                self.game_over = True
+                self.board.draw(self.pacman.score, self.message)
+                break
+
+            time.sleep(0.3)
+
+
+if __name__ == "__main__":
+    layout_content = """
+oooooooooooooooooooo
+oP.................o
+o.ooooooooo.oooooo.o
+o.o.......o..o.....o
+o.o.ooooo.o.o.oooo.o
+o......G...o..o.o..o
+ooooo.o.ooo.oooo.o.o
+oG....o............o
+oooooo.oooooo.oooo.o
+o..................o
+oooooooooooooooooooo
 """
-for row in board:
-    print(' '.join(row))"""
+    layout_filename = "layout.txt"
+    try:
+        with open(layout_filename, "w") as f:
+            f.write(layout_content.strip())
+
+        game = PacmanGame(layout_filename, num_ghosts=2, pacman_ai_depth=4)
+        game.run()
+
+    except FileNotFoundError as e:
+        print(e)
+    except ValueError as e:
+        print(e)
+    finally:
+        if os.path.exists(layout_filename):
+            try:
+                os.remove(layout_filename)
+            except OSError as e:
+                print(f"Error removing layout file: {e}")
